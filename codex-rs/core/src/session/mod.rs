@@ -196,6 +196,7 @@ use codex_protocol::exec_output::StreamOutput;
 
 mod config_lock;
 mod handlers;
+mod inject;
 mod input_queue;
 mod mcp;
 mod multi_agents;
@@ -1853,11 +1854,11 @@ impl Session {
         }
 
         if self
-            .inject_response_items(vec![ResponseInputItem::Message {
+            .inject_if_running(vec![ResponseItem::from(ResponseInputItem::Message {
                 role: "developer".to_string(),
                 content: vec![ContentItem::InputText { text }],
                 phase: None,
-            }])
+            })])
             .await
             .is_err()
         {
@@ -1950,11 +1951,11 @@ impl Session {
         }
 
         if self
-            .inject_response_items(vec![ResponseInputItem::Message {
+            .inject_if_running(vec![ResponseItem::from(ResponseInputItem::Message {
                 role: "developer".to_string(),
                 content: vec![ContentItem::InputText { text }],
                 phase: None,
-            }])
+            })])
             .await
             .is_err()
         {
@@ -2510,26 +2511,19 @@ impl Session {
         }
     }
 
-    /// Records input items: always append to conversation history and
-    /// persist these response items to rollout.
+    /// Records conversation items: append to history, persist to rollout, and
+    /// notify clients observing raw response items.
     pub(crate) async fn record_conversation_items(
         &self,
         turn_context: &TurnContext,
         items: &[ResponseItem],
     ) {
-        self.record_into_history(items, turn_context).await;
+        {
+            let mut state = self.state.lock().await;
+            state.record_items(items.iter(), turn_context.truncation_policy);
+        }
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
-    }
-
-    /// Append ResponseItems to the in-memory conversation history only.
-    pub(crate) async fn record_into_history(
-        &self,
-        items: &[ResponseItem],
-        turn_context: &TurnContext,
-    ) {
-        let mut state = self.state.lock().await;
-        state.record_items(items.iter(), turn_context.truncation_policy);
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -3192,7 +3186,8 @@ impl Session {
 
         let mut pending_input = additional_context_input
             .into_iter()
-            .map(TurnInput::ResponseInputItem)
+            .map(ResponseItem::from)
+            .map(TurnInput::ResponseItem)
             .collect::<Vec<_>>();
         pending_input.push(TurnInput::UserInput(input));
         self.input_queue
@@ -3202,16 +3197,6 @@ impl Session {
             )
             .await;
         Ok(active_turn_id.clone())
-    }
-
-    /// Returns the input if there was no task running to inject into.
-    pub async fn inject_response_items(
-        &self,
-        input: Vec<ResponseInputItem>,
-    ) -> Result<(), Vec<ResponseInputItem>> {
-        self.input_queue
-            .inject_response_items(&self.active_turn, input)
-            .await
     }
 
     pub(crate) async fn record_memory_citation_for_turn(&self, sub_id: &str) {
