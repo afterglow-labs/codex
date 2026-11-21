@@ -1,9 +1,6 @@
 name: python-sdk-cli-release
 
 on:
-  workflow_run:
-    workflows: [rust-release]
-    types: [completed]
   workflow_dispatch:
     inputs:
       cli_run_id:
